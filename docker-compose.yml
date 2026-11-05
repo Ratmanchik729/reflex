@@ -1,0 +1,200 @@
+name: reflex-range
+
+networks:
+  game:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.60.0.0/16
+          gateway: 10.60.0.254
+
+services:
+  gameserver:
+    build: ./gameserver
+    environment:
+      TICK: "6"
+    networks:
+      game:
+        ipv4_address: 10.60.254.1
+
+  # --- наша команда (team 13): вулнбокс + REFLEX в общем netns ---
+  vulnbox-us:
+    build: ./svc
+    environment:
+      TEAM_NAME: "team13-us"
+    networks:
+      game:
+        ipv4_address: 10.60.13.1
+
+  reflex:
+    build: ./reflex
+    network_mode: "service:vulnbox-us"   # общий сетевой стек с нашим вулнбоксом
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      IFACE: "eth0"
+      SELF_IP: "10.60.13.1"
+      SELF_TEAM: "13"
+      GS: "10.60.254.1"
+      WORKERS: "6"
+      QUEUE_MAX: "256"
+      RL_INTERVAL: "2.0"
+      REPLAY_TIMEOUT: "2.0"
+      TARGET_MODE: "both"        # vulnbox | source | both
+      # FLAG_FORMAT по умолчанию = uralcup{...}; для другой лиги переопредели
+    # жёсткие лимиты: даже взбесившись, REFLEX не уморит реальный сервис
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 128
+    depends_on:
+      - vulnbox-us
+      - gameserver
+
+  # --- соседние команды (жертвы контр-удара) ---
+  vulnbox7:
+    build: ./svc
+    environment:
+      TEAM_NAME: "team7"
+    networks:
+      game:
+        ipv4_address: 10.60.7.1
+
+  vulnbox9:
+    build: ./svc
+    environment:
+      TEAM_NAME: "team9"
+    networks:
+      game:
+        ipv4_address: 10.60.9.1
+
+  vulnbox11:
+    build: ./svc
+    environment:
+      TEAM_NAME: "team11"
+    networks:
+      game:
+        ipv4_address: 10.60.11.1
+
+  vulnbox3:
+    build: ./svc
+    environment:
+      TEAM_NAME: "team3"
+    networks:
+      game:
+        ipv4_address: 10.60.3.1
+
+  vulnbox5:
+    build: ./svc
+    environment:
+      TEAM_NAME: "team5"
+    networks:
+      game:
+        ipv4_address: 10.60.5.1
+
+  # --- атакующие (бьют по нам со своих тачек, не с вулнбоксов) ---
+  # каждый использует СТРУКТУРНО РАЗНЫЙ эксплойт — REFLEX учит все формы сам
+  attacker7:                         # flag-id в query: /note?id=
+    build: ./attacker
+    environment:
+      GS: "10.60.254.1"
+      VICTIM_TEAM: "13"
+      VICTIM_IP: "10.60.13.1"
+      MODE: "query"
+      PERIOD: "5"
+      BURST: "1"
+    networks:
+      game:
+        ipv4_address: 10.60.7.37
+    depends_on: [gameserver, vulnbox-us]
+
+  attacker9:                         # flag-id в пути: /v2/read/<id>
+    build: ./attacker
+    environment:
+      GS: "10.60.254.1"
+      VICTIM_TEAM: "13"
+      VICTIM_IP: "10.60.13.1"
+      MODE: "path"
+      PERIOD: "7"
+      BURST: "1"
+    networks:
+      game:
+        ipv4_address: 10.60.9.37
+    depends_on: [gameserver, vulnbox-us]
+
+  attacker11:                        # flag-id в теле POST: /lookup {"ref":...}
+    build: ./attacker
+    environment:
+      GS: "10.60.254.1"
+      VICTIM_TEAM: "13"
+      VICTIM_IP: "10.60.13.1"
+      MODE: "body"
+      PERIOD: "9"
+      BURST: "1"
+    networks:
+      game:
+        ipv4_address: 10.60.11.37
+    depends_on: [gameserver, vulnbox-us]
+
+  attacker5:                         # SQLi-дамп (flag-id НЕ нужен -> реплей verbatim)
+    build: ./attacker
+    environment:
+      GS: "10.60.254.1"
+      VICTIM_TEAM: "13"
+      VICTIM_IP: "10.60.13.1"
+      MODE: "sqli"
+      PERIOD: "6"
+    networks:
+      game:
+        ipv4_address: 10.60.5.37
+    depends_on: [gameserver, vulnbox-us]
+
+  attacker3:                         # LFI / path traversal к файлу с флагом (verbatim)
+    build: ./attacker
+    environment:
+      GS: "10.60.254.1"
+      VICTIM_TEAM: "13"
+      VICTIM_IP: "10.60.13.1"
+      MODE: "lfi"
+      PERIOD: "8"
+    networks:
+      game:
+        ipv4_address: 10.60.3.37
+    depends_on: [gameserver, vulnbox-us]
+
+  attacker-xss:                      # reflected XSS — флага не даёт, только intel
+    build: ./attacker
+    environment:
+      GS: "10.60.254.1"
+      VICTIM_IP: "10.60.13.1"
+      MODE: "xss"
+      PERIOD: "10"
+    networks:
+      game:
+        ipv4_address: 10.60.7.38
+    depends_on: [vulnbox-us]
+
+  attacker-php:                      # php://filter base64 — exfil без плейнтекста, intel
+    build: ./attacker
+    environment:
+      GS: "10.60.254.1"
+      VICTIM_IP: "10.60.13.1"
+      MODE: "php"
+      PERIOD: "10"
+    networks:
+      game:
+        ipv4_address: 10.60.9.38
+    depends_on: [vulnbox-us]
+
+  # --- пробник задержки (вручную: docker compose run --rm probe) ---
+  probe:
+    build: ./probe
+    environment:
+      TARGET: "10.60.13.1"
+      N: "500"
+      LABEL: "probe"
+    networks:
+      game:
+        ipv4_address: 10.60.200.1
+    profiles: ["manual"]
+    depends_on: [vulnbox-us]
